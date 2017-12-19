@@ -1,0 +1,157 @@
+#!/bin/bash
+
+set -eu
+set -o pipefail
+
+GITTOP=$(git rev-parse --show-toplevel)
+GITDIR=$(git rev-parse --git-dir)
+WIPFILE=$GITTOP/WIP.md
+
+function usage() {
+  cat <<EOF
+Usage:
+$0 [command] [arguments]
+
+Keeps track of remaining tasks in WIP.md file.
+
+Commands:
+add         Add a task to do as part of this branch
+done        Commit with the current task as message, and go to the next one
+list        Lists all tasks
+current     Show current task
+remaining   Show number of remaining tasks
+pre-commit  Like done, but meant to be called as a pre-commit hook
+prepare-commit-msg
+            Use as a git hook in combination with pre-commit in order to
+            set the commit message to the current task.
+
+EOF
+}
+
+if [[ -z ${1+x} ]]; then
+  usage
+  exit 1
+fi
+
+COMMAND=$1
+shift
+
+if [[ $COMMAND == "list" ]]; then
+
+  cat $WIPFILE
+
+elif [[ $COMMAND == "current" ]]; then
+
+  if [[ ! -e $WIPFILE ]]; then
+    exit 0;
+  fi
+
+  if ! (grep -q -E "^- \[ \].*$" $WIPFILE); then
+    echo "All tasks done."
+    exit 0
+  fi
+
+  CURRENT_TASK=$(grep --no-filename --line-number --only-matching -E "^- \[ \].*$" $WIPFILE | head -n 1)
+  MESSAGE=$(echo $CURRENT_TASK | sed -r -e 's/^[0-9]+:- \[ \] //')
+  echo -e "Current task:\n\n\t$MESSAGE"
+
+elif [[ $COMMAND == "add" ]]; then
+
+  echo "- [ ] $1" >> $WIPFILE
+  git add $WIPFILE
+
+elif [[ $COMMAND == "remaining" ]]; then
+
+  if ! (grep -q -E "^- \[ \].*$" $WIPFILE); then
+    echo "No tasks recorded!"
+    exit 1
+  fi
+    
+  REMAINING_TASKS=$(grep -E "^- \[ \].*$" $WIPFILE | wc -l)
+  if [[ $REMAINING_TASKS -eq 1 ]]; then
+    echo "Last task!"
+  else
+    echo "Remaining tasks: $REMAINING_TASKS"
+  fi
+
+elif [[ $COMMAND == "done" || $COMMAND == "pre-commit" ]]; then
+
+  if [[ -e $GITDIR/TASK_COMMIT ]]; then
+    rm -f $GITDIR/TASK_COMMIT
+    exit 0
+  fi
+  
+  if ! (grep -q -E "^- \[ \].*$" $WIPFILE); then
+    echo "All tasks done, nothing to complete!"
+    if [[ $COMMAND == "done" ]]; then
+      exit 1
+    else
+      rm -f $GITDIR/TASK_MESSAGE
+      exit 0
+    fi
+  fi
+  
+  CURRENT_TASK=$(grep --no-filename --line-number --only-matching -E "^- \[ \].*$" $WIPFILE | head -n 1)
+  LINENUM=$(echo $CURRENT_TASK | cut -d: -f1)
+  MESSAGE=$(echo $CURRENT_TASK | sed -r -e 's/^[0-9]+:- \[ \] //')
+  REMAINING_TASKS=$(grep -E "^- \[ \].*$" $WIPFILE | wc -l)
+
+  if [[ $REMAINING_TASKS -eq 1 ]]; then
+    echo "Done with last task: $MESSAGE"
+    echo "Removing WIP.md..."
+    git rm --force --cached $WIPFILE
+    if [[ $COMMAND == "done" ]]; then
+      rm -f $GITDIR/TASK_MESSAGE
+      echo "Committing..."
+      echo "git-task commit in progress" > $GITDIR/TASK_COMMIT
+      git commit -e -m "$MESSAGE" || (git add $WIPFILE; echo "Commit aborted."; exit 1)
+      rm $WIPFILE
+    else
+      rm -f $GITDIR/TASK_MESSAGE
+      echo "Committing..."
+      echo "git-task commit in progress" > $GITDIR/TASK_COMMIT
+      git commit -e -m "$MESSAGE" || (git add $WIPFILE; echo "Commit aborted."; exit 1)
+      rm $WIPFILE
+      exit 1
+    fi
+  else
+    sed -i.bak -e "${LINENUM}s/^- \[ \]/- \[x\]/" $WIPFILE
+    echo "Done with task: $MESSAGE"
+    git add $WIPFILE
+    
+    if [[ $COMMAND == "done" ]]; then
+      echo "Committing..."
+      echo "git-task commit in progress" > $GITDIR/TASK_COMMIT
+      rm -f $GITDIR/TASK_MESSAGE
+      git commit -e -m "$MESSAGE" || (mv $WIPFILE.bak $WIPFILE; git add $WIPFILE; echo "Commit aborted."; exit 1)
+      rm $WIPFILE.bak
+    else
+      rm -f $GITDIR/TASK_MESSAGE
+      echo "$MESSAGE" > $GITDIR/TASK_MESSAGE
+      rm $WIPFILE.bak
+    fi
+
+    NEW_TASK=$(grep --no-filename --line-number --only-matching -E "^- \[ \].*$" $WIPFILE | head -n 1)
+    NEW_MESSAGE=$(echo $NEW_TASK | sed -r -e 's/^[0-9]+:- \[ \] //')
+    echo "New task: $NEW_MESSAGE"
+  fi
+
+elif [[ $COMMAND == "prepare-commit-msg" ]]; then
+
+  if [[ -e $GITDIR/TASK_COMMIT ]]; then
+    rm -f $GITDIR/TASK_COMMIT
+    exit 0
+  fi
+
+  if [[ -e $GITDIR/TASK_MESSAGE ]]; then
+    cat $GITDIR/TASK_MESSAGE > $1.new
+    cat $1 >> $1.new
+    mv $1.new $1
+  fi
+
+else
+  
+  echo -e "\nError: Unknown command $COMMAND.\n"
+  usage
+
+fi
