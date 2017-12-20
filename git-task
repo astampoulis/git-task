@@ -80,6 +80,10 @@ elif [[ $COMMAND == "done" || $COMMAND == "pre-commit" ]]; then
     rm -f $GITDIR/TASK_COMMIT
     exit 0
   fi
+
+  if ! [[ -e $WIPFILE ]]; then
+    exit 0
+  fi
   
   if ! (grep -q -E "^- \[ \].*$" $WIPFILE); then
     echo "All tasks done, nothing to complete!"
@@ -112,7 +116,6 @@ elif [[ $COMMAND == "done" || $COMMAND == "pre-commit" ]]; then
       echo "git-task commit in progress" > $GITDIR/TASK_COMMIT
       git commit -e -m "$MESSAGE" || (git add $WIPFILE; echo "Commit aborted."; exit 1)
       rm $WIPFILE
-      exit 1
     fi
   else
     sed -i.bak -e "${LINENUM}s/^- \[ \]/- \[x\]/" $WIPFILE
